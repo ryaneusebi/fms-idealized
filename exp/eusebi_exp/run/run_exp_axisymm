@@ -9,7 +9,7 @@
 #SBATCH --export=ALL
 #SBATCH --mail-type=begin        # send email when job begins
 #SBATCH --mail-type=end          # send email when job ends
-#SBATCH --mail-user=reusebi@caltech.edu
+#SBATCH --mail-user=$USER@caltech.edu
 
 
 # === Default test run script for idealized GCM ===

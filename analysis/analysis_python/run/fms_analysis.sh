@@ -9,14 +9,14 @@
 #SBATCH --export=ALL
 #SBATCH --mail-type=begin        # send email when job begins
 #SBATCH --mail-type=end          # send email when job ends
-#SBATCH --mail-user=reusebi@caltech.edu
+#SBATCH --mail-user=$USER@caltech.edu
 
 
 # 64 GB and 3 hours and 10 cpus for 200 days of T42
 # 128 GB and 3 hours for 200 days of T85 and T127
 
 # Activate conda environment manually (miniconda has broken hardcoded paths)
-export PATH="/resnick/groups/esm/reusebi/miniconda3/envs/fms_analysis/bin:$PATH"
-export CONDA_PREFIX="/resnick/groups/esm/reusebi/miniconda3/envs/fms_analysis"
+export PATH="/resnick/groups/esm/$USER/miniconda3/envs/fms_analysis/bin:$PATH"
+export CONDA_PREFIX="/resnick/groups/esm/$USER/miniconda3/envs/fms_analysis"
 
 python -u ../src/fms_analysis.py "$@"
