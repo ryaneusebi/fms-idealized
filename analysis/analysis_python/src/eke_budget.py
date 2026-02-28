@@ -1,33 +1,33 @@
-import sys
 import os
 import numpy as np
 import xarray as xr
 from time import time
 from glob import glob
-# from fms_analysis import proc_runname, mean_flow_stats
-from utils import get_theta, get_zint
+from proc_runname import proc_runname
+from mean_flow_stats import mean_flow_stats
+from utils import get_zint
 from utils import get_phideriv, get_pderiv, get_phiflux, get_pcumsum
 import argparse
 
 R = 287 # J/kg/K
 
 
-def get_eke_budget(ds, meanstats, geo_pot, radius, sigma_b,Cdrag):
+def get_eke_budget(ds, meanstats, geo_pot, radius, sigma_b, Cdrag):
     vmean = meanstats.v
     wmean = meanstats.w
     umean = meanstats.u
     psmean = meanstats.ps
     geomean = (geo_pot*ds.ps).mean(['lon', 'time']) / psmean
-    u_dissmean = meanstats.dt_ug_diffusion
-    v_dissmean = meanstats.dt_vg_diffusion
+    u_diffmean = meanstats.dt_ug_diffusion
+    v_diffmean = meanstats.dt_vg_diffusion
 
     vp = ds.vcomp - vmean
     wp = ds.omega - wmean
     up = ds.ucomp - umean
     ps = ds.ps
     geop = geo_pot - geomean
-    u_dissp = ds.dt_ug_diffusion - u_dissmean
-    v_dissp = ds.dt_vg_diffusion - v_dissmean
+    u_diffp = ds.dt_ug_diffusion - u_diffmean
+    v_diffp = ds.dt_vg_diffusion - v_diffmean
 
     alpha = R*ds.temp/((ds.temp*0 + ds.sigma)*ps)
     alphap = alpha - (alpha * ps).mean(['lon', 'time']) / psmean
@@ -37,18 +37,23 @@ def get_eke_budget(ds, meanstats, geo_pot, radius, sigma_b,Cdrag):
     v2_eddy = (vp**2 * ps).mean(['lon', 'time']) / psmean
     uw_eddy = (up*wp * ps).mean(['lon', 'time']) / psmean
     vw_eddy = (vp*wp * ps).mean(['lon', 'time']) / psmean
-    u_disseddy = (u_dissp*up * ps).mean(['lon', 'time']) / psmean
-    v_disseddy = (v_dissp*vp * ps).mean(['lon', 'time']) / psmean
+    u_diffeddy = (u_diffp*up * ps).mean(['lon', 'time']) / psmean
+    v_diffeddy = (v_diffp*vp * ps).mean(['lon', 'time']) / psmean
+    diff_eddy = u_diffeddy + v_diffeddy
 
-    sigma_b = 0.85
+    diff_full = ((ds.dt_ug_diffusion*ds.ucomp + ds.dt_vg_diffusion*ds.vcomp)*ps).mean(['lon', 'time']) / psmean  
+    diff_full = get_zint(diff_full, ds.phalf, psmean)
+
     drag_w = ds.ucomp*0 + np.maximum((ds.sigma - sigma_b)/(1-sigma_b), 0)
     V = np.sqrt(ds.ucomp**2 + ds.vcomp**2)
     bl_drag_u = drag_w * Cdrag * V * ds.ucomp
     bl_drag_v = drag_w * Cdrag * V * ds.vcomp
     bl_drag_up = bl_drag_u - (bl_drag_u * ps).mean(['lon', 'time']) / psmean
     bl_drag_vp = bl_drag_v - (bl_drag_v * ps).mean(['lon', 'time']) / psmean
-    bl_drag = ((bl_drag_up * up + bl_drag_vp * vp) * ps).mean(['lon', 'time']) / psmean
-    bl_drag_full = get_zint(bl_drag, ds.phalf, psmean)
+    bl_drag_eddy = ((bl_drag_up * up + bl_drag_vp * vp) * ps).mean(['lon', 'time']) / psmean
+    bl_drag_eddy = get_zint(bl_drag_eddy, ds.phalf, psmean)
+    bl_drag_full = ((bl_drag_u*ds.ucomp + bl_drag_v*ds.vcomp)*ps).mean(['lon', 'time']) / psmean
+    bl_drag_full = get_zint(bl_drag_full, ds.phalf, psmean)
 
     e = 1/2 * (vp**2 + up**2)
     emean = (e * ps).mean(['lon', 'time']) / psmean
@@ -79,23 +84,37 @@ def get_eke_budget(ds, meanstats, geo_pot, radius, sigma_b,Cdrag):
 
     baroc_conv = -walpha_eddy
 
-    shear_prod = -uv_eddy*du_dphi - uw_eddy*du_dp - v2_eddy*dv_dphi - vw_eddy*dv_dp
+    shear_prod_uv = -uv_eddy*du_dphi
+    shear_prod_uw = -uw_eddy*du_dp
+    shear_prod_v2 = -v2_eddy*dv_dphi
+    shear_prod_vw = -vw_eddy*dv_dp
+    shear_prod = shear_prod_uv + shear_prod_uw + shear_prod_v2 + shear_prod_vw
+    shear_prod = shear_prod.rename("shear_prod").assign_attrs(
+        {'long_name': 'Shear production', 'units': 'm^2 / s^3'})
+    shear_prod_uv = shear_prod_uv.rename("shear_prod_uv").assign_attrs(
+        {'long_name': 'Shear production by uv', 'units': 'm^2 / s^3'})
+    shear_prod_uw = shear_prod_uw.rename("shear_prod_uw").assign_attrs(
+        {'long_name': 'Shear production by uw', 'units': 'm^2 / s^3'})
+    shear_prod_v2 = shear_prod_v2.rename("shear_prod_v2").assign_attrs(
+        {'long_name': 'Shear production by v2', 'units': 'm^2 / s^3'})
+    shear_prod_vw = shear_prod_vw.rename("shear_prod_vw").assign_attrs(
+        {'long_name': 'Shear production by vw', 'units': 'm^2 / s^3'})
+    
 
-    dissipation = trans_mean_phi + trans_mean_p + trans_eddy_phi + trans_eddy_p - baroc_conv - shear_prod
-
-    diss_other = u_disseddy + v_disseddy
-    diss_other = diss_other.rename("diss_other").assign_attrs(
-        {'long_name': 'Other dissipation', 'units': 'm^2 / s^3'})
+    diff_eddy = diff_eddy.rename("diff_eddy").assign_attrs(
+        {'long_name': 'Diffusive dissipation by eddies', 'units': 'm^2 / s^3'})
+    diff_full = diff_full.rename("diff_full").assign_attrs(
+        {'long_name': 'Diffusive dissipation by full flow', 'units': 'm^2 / s^3'})
 
     trans_mean_phi = trans_mean_phi.rename("trans_mean_phi").assign_attrs(
         {'long_name': 'Mean meridional transport of eddy kinetic energy', 'units': 'm^2 / s^3'})
     trans_mean_p = trans_mean_p.rename("trans_mean_p").assign_attrs(
         {'long_name': 'Mean vertical transport of eddy kinetic energy', 'units': 'm^2 / s^3'})
     trans_eddy_phi = trans_eddy_phi.rename("trans_eddy_phi").assign_attrs(
-        {'long_name': 'Eddy meridional transport of eddy kinetic energy', 'units': 'm^2 / s^3'})
+        {'long_name': 'Eddy meridional transport of eddy energy', 'units': 'm^2 / s^3'})
     trans_eddy_p = trans_eddy_p.rename("trans_eddy_p").assign_attrs(
-        {'long_name': 'Eddy vertical transport of eddy kinetic energy', 'units': 'm^2 / s^3'})
-    trans_eddy_k = trans_eddy_k.rename("trans_eddy_k").assign_attrs(
+        {'long_name': 'Eddy vertical transport of eddy energy', 'units': 'm^2 / s^3'})
+    trans_eddy_ke = trans_eddy_k.rename("trans_eddy_ke").assign_attrs(
         {'long_name': 'Eddy kinetic energy transport by eddies', 'units': 'm^2 / s^3'})
     baroc_conv = baroc_conv.rename("baroc_conv").assign_attrs(
         {'long_name': 'Baroclinic conversion', 'units': 'm^2 / s^3'})
@@ -103,15 +122,11 @@ def get_eke_budget(ds, meanstats, geo_pot, radius, sigma_b,Cdrag):
         {'long_name': 'Pressure work', 'units': 'm^2 / s^3'})
     pressure_work_p = wgeo_eddy.rename("pressure_work_p").assign_attrs(
         {'long_name': 'Pressure work', 'units': 'm^2 / s^3'})
-    shear_prod = shear_prod.rename("shear_prod").assign_attrs(
-        {'long_name': 'Shear production', 'units': 'm^2 / s^3'})
-    dissipation = dissipation.rename("dissipation").assign_attrs(
-        {'long_name': 'Dissipation', 'units': 'm^2 / s^3'})
     bl_drag_full = bl_drag_full.rename("bl_drag_full").assign_attrs(
         {'long_name': 'Bottom level drag', 'units': 'm^2 / s^3'})
-    bl_drag = bl_drag.rename("bl_drag").assign_attrs(
-        {'long_name': 'Bottom level drag', 'units': 'm^2 / s^3'})
-    eke_budget = xr.merge([trans_mean_phi, trans_mean_p, trans_eddy_phi, trans_eddy_p, baroc_conv, pressure_work_phi, pressure_work_p, shear_prod, dissipation, diss_other, trans_eddy_k, bl_drag_full, bl_drag])
+    bl_drag_eddy = bl_drag_eddy.rename("bl_drag_eddy").assign_attrs(
+        {'long_name': 'Bottom level drag by eddies', 'units': 'm^2 / s^3'})
+    eke_budget = xr.merge([trans_mean_phi, trans_mean_p, trans_eddy_phi, trans_eddy_p, trans_eddy_ke, baroc_conv, pressure_work_phi, pressure_work_p, shear_prod, diff_eddy, diff_full, bl_drag_full, bl_drag_eddy])
     
     eke_budget = eke_budget.assign_attrs(
         {'long_name': 'Eddy kinetic energy budget', 'units': 'm^2 / s^3'})
@@ -119,25 +134,42 @@ def get_eke_budget(ds, meanstats, geo_pot, radius, sigma_b,Cdrag):
     return eke_budget
     
 
-def main(runname, raw_output_dir,days):
+def main(runname, raw_output_dir,days, start_analysis, runs_per_script):
     start_time = time()
 
     print(f'Analyzing {runname}')
 
+    day_list = np.arange(start_analysis*days, (runs_per_script+1)*days, days)
+    R = 287 # J/kg/K
+
+    print(f'Analyzing {runname}')
+
     simulation = proc_runname(runname)
-    savepath = f"/resnick/groups/esm/reusebi/fms_analysis/{runname}"
+    user = os.environ['USER']
+    savepath = f"/resnick/groups/esm/{user}/fms_analysis/{runname}"
     if not os.path.exists(savepath):
         os.makedirs(savepath)
-    fnames = np.concatenate([glob(f"{raw_output_dir}/combine/day{day:04}h00/day{day:04}h00.4xday.nc*") for day in days])
-    if len(fnames) > len(days):
+    fnames = np.concatenate([glob(f"{raw_output_dir}/combine/day{day:04}h00/day{day:04}h00.4xday.nc*") for day in day_list])
+    # Use open_mfdataset for efficient, lazy loading of multiple files
+    if len(fnames) > len(day_list):
         drop_vars = ['latb']
     else:
         drop_vars = []
-
-    chunks = {'time': 1, 'sigma': -1, 'lat': -1, 'lon': -1}
+    if simulation['res'] == 'T42':
+        chunks = {'time': 4, 'sigma': 5, 'lat': -1, 'lon': -1}
+    elif simulation['res'] == 'T85':
+        chunks = {'time': 1, 'sigma': 5, 'lat': -1, 'lon': -1}
+    elif simulation['res'] == 'T127':
+        chunks = {'time': 4, 'sigma': 5, 'lat': -1, 'lon': -1}
     ds = xr.open_mfdataset(fnames, combine='by_coords', decode_times=False, chunks=chunks, drop_variables=drop_vars)
-    
-    ds = ds[['ucomp', 'vcomp', 'omega', 'temp', 'ps', 'teq', 'phalf', 'pfull','dt_tg_diffusion','dt_tg_convection', 'dt_tg_radiation', 'dt_ug_diffusion', 'dt_vg_diffusion', 'diff_m']]
+    try:
+        ds = ds[['ucomp', 'vcomp', 'omega', 'temp', 'ps', 'teq', 'phalf', 'pfull','dt_tg_diffusion','dt_tg_convection', 'dt_tg_radiation', 'dt_ug_diffusion', 'dt_vg_diffusion', 'diff_m', 'phalf']]
+    except:
+        ds = ds[['ucomp', 'vcomp', 'omega', 'temp', 'ps', 'teq', 'phalf', 'pfull','dt_tg_convection', 'dt_tg_radiation','phalf' ]]
+        ds['dt_ug_diffusion'] = ds.ucomp*0
+        ds['dt_vg_diffusion'] = ds.vcomp*0
+        ds['diff_m'] = ds.ucomp*0
+        ds['dt_tg_diffusion'] = ds.temp*0
     print(f'opened dataset in {time() - start_time} seconds')
     start_time = time()
 
@@ -186,5 +218,7 @@ if __name__ == '__main__':
    args = parser.parse_args()
    runname = args.runname
    raw_output_dir = args.raw_output_dir
-   days = np.arange(args.start_analysis, args.runs_per_script+1)*args.days
-   main(runname, raw_output_dir,days)
+   days = args.days
+   start_analysis = args.start_analysis
+   runs_per_script = args.runs_per_script
+   main(runname, raw_output_dir,days, start_analysis, runs_per_script)
